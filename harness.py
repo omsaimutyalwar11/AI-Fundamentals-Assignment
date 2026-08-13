@@ -88,5 +88,72 @@ class AgentHarness:
         #
         # Return a dict with: "final_answer", "steps_taken", "stop_reason", and
         # "log" (from self._logger.get_log()).
-        pass
 
+        messages = [{"role": "user", "content": user_input}]
+
+        for step in range(1, self._max_steps + 1):
+            # Step 1: Call self._llm.chat(messages) to get the next response.
+            response = self._llm.chat(messages)
+            self._logger.log_step(step, "llm_response", response)
+
+            # Step2: If the response type is "text", it is the final answer.
+            if response.get("type") == "text":
+                final_answer = response.get("content", "") or ""
+                self._logger.log_step(step, "final_answer", {
+                    "content": final_answer,
+                    "stop_reason": "final_answer"
+                })
+                return {
+                    "final_answer": final_answer,
+                    "steps_taken": step,
+                    "stop_reason": "final_answer",
+                    "log": self._logger.get_log()
+                }
+
+            # Step 3: If the response type is "tool_call", validate and execute it.
+            if response.get("type") == "tool_call":
+                tool_name = response.get("tool_name")
+                arguments = response.get("arguments", {}) or {}
+
+                validation = self._validator.validate_tool_call(response)
+                self._logger.log_step(step, "validation", validation)
+
+                if not validation.get("valid", False):
+                    error_message = validation.get("error") or "Tool call validation failed."
+                    final_answer = f"{error_message}"
+                    self._logger.log_step(step, "final_answer", {
+                        "content": final_answer,
+                        "stop_reason": "validation_error"
+                    })
+                    return {
+                        "final_answer": final_answer,
+                        "steps_taken": step,
+                        "stop_reason": "validation_error",
+                        "log": self._logger.get_log()
+                    }
+
+                self._logger.log_step(step, "tool_call", {
+                    "tool_name": tool_name,
+                    "arguments": arguments
+                })
+
+                tool_result = self._registry.execute_tool(tool_name, arguments)
+                self._logger.log_step(step, "tool_result", {"result": tool_result})
+
+                messages.append({
+                    "role": "tool_result",
+                    "content": str(tool_result)
+                })
+                continue
+
+        final_answer = "Reached the maximum number of steps without a final answer."
+        self._logger.log_step(self._max_steps, "final_answer", {
+            "content": final_answer,
+            "stop_reason": "max_steps"
+        })
+        return {
+            "final_answer": final_answer,
+            "steps_taken": self._max_steps,
+            "stop_reason": "max_steps",
+            "log": self._logger.get_log()
+        }
